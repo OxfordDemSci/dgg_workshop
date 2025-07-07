@@ -1,0 +1,371 @@
+---
+title: "Tutorial 1: Using Facebook Marketing API to Obtain Monthly Active User Counts"
+author: "Jiaxuan Li, Casey Breen, Ridhi Kashyap"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+format: html
+editor: visual
+---
+
+# Using Facebook Marketing API to Obtain Monthly Active User Counts
+
+In this part of tutorial, we'll explore how to use an API (Application Programming Interface) to obtain monthly active user (MAU) counts for Facebook (FB) by geography, gender, and age. These data have been used in our Digital Gender Gap project and in other projects to study topics such as migration. For example:
+
+-   Fatehkia, Masoomali, Ridhi Kashyap, and Ingmar Weber. 2018. ‘Using Facebook Ad Data to Track the Global Digital Gender Gap’. *World Development* 107:189–209. doi: [10.1016/j.worlddev.2018.03.007](https://doi.org/10.1016/j.worlddev.2018.03.007).
+
+-   Kashyap, Ridhi, Masoomali Fatehkia, Reham Al Tamime, and Ingmar Weber. "Monitoring global digital gender inequality using the online populations of Facebook and Google." *Demographic Research* 43 (2020): 779-816.
+
+-   Zagheni, Emilio, Ingmar Weber, and Krishna Gummadi. "Leveraging Facebook's advertising platform to monitor stocks of migrants." *Population and Development Review* (2017): 721-734.
+
+-   Rampazzo, Francesco, Jakub Bijak, Agnese Vitali, Ingmar Weber, and Emilio Zagheni. 2021. ‘A Framework for Estimating Migrant Stocks Using Digital Traces and Survey Data: An Application in the United Kingdom’. *Demography* 58(6):2193–2218. doi: [10.1215/00703370-9578562](https://doi.org/10.1215/00703370-9578562).
+
+To query the Facebook Marketing API, we'll use the [`rsocialwatcher`](https://worldbank.github.io/rsocialwatcher/articles/rsocialwatcher-vignette.html) package in R. This is a simplified R version of a python package called `pysocialwatcher.`
+
+The package requires credentials and a user-provided target population specification (e.g., women aged 15-49 in France). The package can then query the API and return a dataframe containing the number of Facebook monthly active users for your specified audience.
+
+You'll need to install the `rsocialwatcher` package before working through the tutorial using the `install.packages("<package_name>")` command.
+
+```{r}
+## Uncomment below line if you haven't installed relevant packages 
+# install.packages("rsocialwatcher")
+# install.packages("tidyverse")
+# install.packages("httr")
+# install.packages("jsonlite")
+# install.packages("countrycode")
+# install.packages("sf")
+# install.packages("rnaturalearth")
+# install.packages("rnaturalearthdata")
+# install.packages("cowplot")
+# install.packages("scales")
+
+library(tidyverse)
+library(rsocialwatcher)
+library(httr)
+library(jsonlite)
+library(countrycode)
+library(sf)
+library(rnaturalearth)
+library(rnaturalearthdata)
+library(cowplot)
+library(scales)
+```
+
+## 1 Credentials
+
+To query the Facebook Marketing API requires creating an account and obtaining credentials. Anyone with a Facebook account can get credentials and this process for obtaining credentials is fairly straightforward (see [instruction here](https://worldbank.github.io/rsocialwatcher/articles/create_facebook_credentials.html)) — feel free to give it a shot outside of the tutorial, if you're interested. Here, we'll use our existing credentials.
+
+We'll need to load in some credentials before we get started. Specifically, we'll need the:
+
+-   API Version
+-   Token
+-   Creation account
+
+We can load these from a separate credentials script. You'll need to update the script with the correct path to your credentials.
+
+```{r}
+## give path to credentials file -- this is a preferred solution so that we don't publicly release credentials 
+source("credential_example.R") 
+
+#### Alternatively, directly supply credentials/version
+# VERSION = 
+# CREATION_ACT = "
+# TOKEN = 
+```
+
+## 2 Basic query of FB Marketing API
+
+To query the Facebook Marketing API using the `rsocialwatcher` package, the main function we will use is: `rsocialwatcher::query_fb_marketing_api().` The package also has other functions as well — to learn more, see the [package website](https://worldbank.github.io/rsocialwatcher/index.html).
+
+First, we can use the help to learn more about the function using the built in documentation figure.
+
+```{r}
+?query_fb_marketing_api
+```
+
+This function clearly has lots of arguments, but let's focus on the basic functionality for now. Here's the code to query all FB users in Great Britain between the ages of 18 and 65.
+
+```{r}
+## All Facebook users in Great Britain between ages of 18 and 65 
+fb_mau_users_gb_18_65 <- query_fb_marketing_api(
+  location_unit_type = "countries",
+  location_keys = "GB",
+  age_min = 18, 
+  age_max = 65,
+  version = VERSION,
+  creation_act = CREATION_ACT,
+  token = TOKEN)
+
+fb_mau_users_gb_18_65
+```
+
+### 2.1 Interpreting output
+
+There key columns in the output are:
+
+-   **`estimate_dau`** = number of daily active users
+
+-   **`estimate_mau_lower_bound`** = lower bound estimate of monthly active users
+
+-   **`estimate_mau_upper_bound`** = upper bound estimate of monthly active users
+
+-   **`location_keys`** = country code (2-letter)
+
+-   `Gender` = gender (1 = male, 2 = female)
+
+-   `age_min` = minimum age
+
+-   `age_max` = maximum age
+
+For simplicity, we'll focus on **`estimate_mau_upper_bound`** for the rest of this lab. This is more stable metric than daily active users, which has more day-to-day fluctuations.
+
+### 2.2 Exercise 1
+
+1.  How many FB monthly active users are in France between the age of 18 and 65? (Use the **`estimate_mau_upper_bound`** column.)
+2.  How many FB monthly active users in Great Britain are between the ages of 40 and 50? Is this more or less than the number of monthly active users between 30 and 40?
+
+## 3 Making multiple queries
+
+There are several useful ways to query data for multiple countries, genders, etc. at once.
+
+-   The `map_param` function allows you to specify multiple countries, genders, etc. at the same time. This will return multiple rows.
+
+-   In contrast, including a vector — e.g., `c("US", "MX", "CA")` — returns MAU counts for all countries pooled together
+
+```{r}
+## Query users by gender in US, MX, and CA
+query_fb_marketing_api(
+  location_unit_type = "countries",
+  location_keys = map_param("US", "MX", "CA"),
+  gender = map_param(1, 2),
+  age_min = 13, 
+  age_max = 65,
+  version = VERSION,
+  creation_act = CREATION_ACT,
+  token = TOKEN)
+```
+
+## 4 Investigating age patterns
+
+Next, let's investigate age patterns. We'll have to do this separately for each age group (`map_param` doesn't quite work here.)
+
+Rather than writing out the same query (with different ages) lots of times, we'll use a for loop.
+
+```{r}
+## Define the age groups of interest 
+age_groups <- list(
+  c(15, 19),
+  c(20, 24),
+  c(25, 29),
+  c(30, 34),
+  c(35, 39),
+  c(40, 44),
+  c(45, 49)
+)
+
+## Create an empty list to store results
+results <- list()
+
+# Loop through each age group and query the API
+for (i in seq_along(age_groups)) {
+  
+  ## 
+  age_min <- age_groups[[i]][1]
+  age_max <- age_groups[[i]][2]
+  
+  # Query the API for the current age group
+  results[[i]] <- query_fb_marketing_api(
+    location_unit_type = "countries", 
+    location_keys = map_param("IN"),
+    gender = map_param(1, 2), # Both genders
+    age_min = age_min,
+    age_max = age_max,
+    version = VERSION,
+    creation_act = CREATION_ACT,
+    token = TOKEN
+  )
+}
+
+# Combine all results into a single dataframe (if needed)
+india_age_mau <- bind_rows(results)
+
+
+```
+
+### 4.1 Visualization monthly active user age patterns
+
+Now let's visualize age patterns in FB MAU user in India. Before running the code below, make a hypothesis about the age groups you anticipate will have the most monthly active users.
+
+First, we'll need to create a variable corresponding to the age category. We'll also convert the gender variable from numeric to character (1 = "men", 2 = "women").
+
+```{r}
+# Create age categories variable from age_min and age_max variables  
+india_age_mau <- india_age_mau %>% 
+  mutate(age_range = paste0("[", age_min, ",", age_max, "]")) %>% 
+  mutate(gender = case_when(
+    gender == 1 ~ "Men",
+    gender == 2 ~ "Women"
+  ))
+```
+
+We'll data visualizations to gain insight into the relationship between age/gender and FB usage. The first visualization is a basic plot you might make for yourself when you're doing some quick exploratory data analysis. It shows the relationship between age range and the mau upper bound. The second is a more polished figure that you might include in a publication.
+
+```{r}
+## Basic plot 
+india_age_mau %>% 
+  ggplot(aes(x = age_range, y = estimate_mau_upper_bound, color = gender, group = gender)) + 
+  geom_line()
+
+## Fancy plot 
+india_age_mau %>% 
+  ggplot(aes(x = age_range, y = estimate_mau_upper_bound, color = gender, group = gender)) + 
+  geom_line(linewidth = 1) +  # Thicker lines for clarity
+  geom_point(size = 3, shape = 21, fill = "white", stroke = 1) +  # Hollow points with white fill
+  scale_y_continuous(labels = scales::comma, limits = c(0, max(india_age_mau$estimate_mau_upper_bound))) + 
+  theme_minimal() + 
+  labs(
+    x = "Age Category",
+    y = "FB Monthly Active Users",
+    color = "Gender",
+    title = "India: Facebook MAU by Age/Gender") + 
+  theme(legend.position = "bottom")
+```
+
+### 4.2 Exercise 2
+
+1.  Are there more women or men FB monthly active users in India? What are some potential reasons for this?
+2.  What age group has the fewest monthly active users? Did this align with your hypothesis?
+
+## 5 Making queries for subnational units
+
+So far, we’ve focused on retrieving MAU estimates at the national level. Now, let’s take it a step further by exploring **subnational units**, which will allow us to better understand geographical variations in digital access. MAU counts can be generated for different levels of geographic units, such as regions, cities, or postal codes, depending on your research needs, and there are different ways of doing this.
+
+### 5.1 Using location keys from Targeting Search API to query for subnational units
+
+To query MAU estimates for subnational areas, one possible solution is to find corresponding **location keys** used by the Facebook Marketing API.
+
+(Warning: These location keys may not correspond to the standard codes like GADM)
+
+We can retrieve these keys using the **Targeting Search API**, by searching with a region or city name and specifying the desired `location_type`. This is where the `GET()` function from the `httr` package in R comes in. For example, to retrieve the location key for the region "England" in UK:
+
+```{r}
+response <- GET("https://graph.facebook.com/v22.0/search", # The base URL
+  query = list(
+    type = "adgeolocation",
+    location_types = '["region"]',
+    q = "england",                     #this is what we're trying to find
+    locale = "en_GB",                  #Ensure a fully English (language) return
+    access_token = TOKEN
+  )
+)
+
+content <- content(response, as = "text", encoding = "UTF-8")
+results_england <- fromJSON(content)$data
+
+results_england
+```
+
+We find that the `location_keys` for England is 4079.
+
+```{r}
+fb_mau_england <- query_fb_marketing_api(
+  location_unit_type = "region",
+  location_keys = "4079",  # Example key for England (find via targeting search)
+  gender = map_param(1, 2),
+  age_min = 18,
+  age_max = 65,
+  version = VERSION,
+  creation_act = CREATION_ACT,
+  token = TOKEN)
+
+fb_mau_england
+```
+
+We can also retrieve `location_keys` at a smaller geographic level. For example, we want to retrieve the location key for the city of Oxford:
+
+```{r}
+response <- GET("https://graph.facebook.com/v22.0/search",
+  query = list(
+    type = "adgeolocation",
+    location_types = '["city"]',            #Now we are searching for a city
+    q = "oxford",
+    locale = "en_GB",          
+    access_token = TOKEN
+  )
+)
+
+content <- content(response, as = "text", encoding = "UTF-8")
+results_oxford <- fromJSON(content)$data
+
+results_oxford %>%
+  filter(type == "city" & country_code =="GB")
+```
+
+There are numerous places with the name "Oxford" in the world. The `location_keys` for Oxford city in Oxfordshire, UK is 814016.
+
+```{r}
+fb_mau_oxford_key <- query_fb_marketing_api(
+  location_unit_type = "city",
+  location_keys = "814016",
+  gender = map_param(1, 2),
+  age_min = 18,
+  age_max = 65,
+  version = VERSION,
+  creation_act = CREATION_ACT,
+  token = TOKEN,
+  verbose = TRUE
+)
+
+fb_mau_oxford_key
+```
+
+### 5.2 Using latitude, longitude, and radius to query for subnational units
+
+Another way to obtain MAU estimates for subnational regions is by defining a **circular area** centered around a specific point, using **latitude**, **longitude**, and a **radius**.
+
+This approach is especially useful when official administrative boundaries are not aligned with your research interests, or when flexibility and precision are required in defining local areas.
+
+```{r}
+# Coordinates for Oxford City Center is (51.75222, -1.25596). Suppose we want to retrieve MAU counts within a 4-mile radius of this point.
+
+fb_mau_oxford_pointradius <- query_fb_marketing_api(
+  location_unit_type = "coordinates",
+  lat_lon = c(51.75222, -1.25596),
+  radius = 4,                
+  radius_unit = "mile",          
+  gender = map_param(1, 2),         
+  age_min = 18,
+  age_max = 65,
+  version = VERSION,
+  creation_act = CREATION_ACT,
+  token = TOKEN,
+  verbose = TRUE
+)
+
+fb_mau_oxford_pointradius
+```
+
+### Optional: **recommended radius**
+
+If you're unsure about the appropriate radius, you can use `adradiussuggestion` option to obtain a **recommended radius** that ensures enough user coverage around a specific coordinate point.
+
+```{r}
+response <- GET(
+  url = paste0("https://graph.facebook.com/v22.0/search"),
+  query = list(
+    type = "adradiussuggestion",
+    latitude = 51.75222,
+    longitude = -1.25596,
+    access_token = TOKEN
+  )
+)
+
+# Parse response
+content <- content(response, as = "text", encoding = "UTF-8")
+radius_oxford <- fromJSON(content)$data
+
+radius_oxford
+```
+
+### 5.3 Exercise 3
+
+1.  Retrieve MAU counts for Cambridge, located in Cambridgeshire, UK, using two different methods.
+2.  Do these different approaches produce significantly different MAU estimates?

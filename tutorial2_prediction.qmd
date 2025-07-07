@@ -1,0 +1,556 @@
+---
+title: "Tutorial 2: Nowcasting National and Subnational Digital Gender Gaps"
+author: "Casey Breen, Jiaxuan Li, Ridhi Kashyap"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+format: html
+editor: visual
+---
+
+# Nowcasting National and Subnational Digital Gender Gaps
+
+In this section, we will cover the steps of fitting and assessing supervised machine learning algorithms to predict digital gender gaps at national and subnational level. Specifically, we will fit a linear regression model to predict national gender gap and a random forest model for subnational gender gap. We will also introduce sample splitting and cross-validation design, and model performance metrics.
+
+```{r}
+## library package 
+library(tidyverse)     ## tidyverse 
+library(tidymodels)    ## machine learning package 
+library(cowplot)       ## pretty plots 
+library(ranger)        ## ranger 
+library(remotes)
+library(cli)
+
+#install.packages("remotes")
+
+#install.packages("cli", dependencies = TRUE)
+#remotes::install_github("r-lib/cli")
+
+## set seed for reproducibility 
+set.seed(47)
+```
+
+## 1. Predicting National-level Female Internet Adoption Using Ordinary Least Squares (OLS) Regression Model
+
+In the first part of this tutorial, we will train and evaluate an OLS model to predict internet adoption among women aged 15–49 at the national level. We employ a simple model because our ground truth consists of only 71 data points. Using more complex machine learning models, such as random forests, would likely lead to overfitting — the model might perform well on the training data but fail to generalize reliably to other countries or regions.
+
+Our dataset includes two kinds of national features:
+
+-   "Online" features: The monthly active user (MAU) counts of men and women on Facebook
+
+-   "Offline" features: A set of socioeconomic indicators from various sources
+
+Let's read in the master file
+
+```{r}
+national_masterfile <- read_csv("national_masterfile.csv")
+
+national_masterfile <- drop_na(national_masterfile)
+```
+
+### 1.1 Feature Definitions
+
+The dataset we are using here was created by the Digital Gender Gaps team by assembling data from various sources. Here's the descriptions of the features we have available in our dataset:
+
+-   `iso3`: Three-letter country identifier defined by the ISO 3166-1 standard
+-   `internet_men`: Percentage of men (ages 15–49) who used the internet in the past 12 months, weighted (From Demographic and Health Survey (DHS) and Multiple Indicator Cluster Survey (MICS) data)
+-   `internet_wom`: Percentage of women (ages 15–49) who used the internet in the past 12 months, weighted (From DHS and MICS data)
+-   `internet_ggi`: Female-to-male ratio of internet usage among individuals aged 15–49, weighted (From DHS and MICS data)
+-   `fb_18_999_wom`: Facebook penetration rate among women aged 18+ (percentage of women on Facebook in the last month relative to population) (from FB marketing API)
+-   `fb_18_999_men`: Facebook penetration rate among men aged 18+ (percentage of women on Facebook in the last month relative to population) (from FB marketing API)
+-   `fb_18_999_r`: Female-to-male ratio of Facebook penetration rate (from FB marketing API)
+-   `hdi`: National-level composite measure of health, education, and standard of living (from [UNDP](https://hdr.undp.org/data-center/documentation-and-downloads))
+-   `gdi`: National-level Gender Development Index (GDI), measuring disparities on the HDI by gender (from [UNDP](https://hdr.undp.org/data-center/documentation-and-downloads))
+-   `gdp_pcap`: GDP per capita (from [World Bank](https://data.worldbank.org/indicator/NY.GDP.PCAP.CD?view=chart))
+-   `gggi_ggi`: Overall gender gap in four fundamental categories: Economic Participation and Opportunity, Educational Attainment, Health and Survival and Political Empowerment. (from [World Economic Forum](https://datafinder.qog.gu.se/dataset/gggi))
+-   `coef_ineq`: Coefficient of human inequality (from [UNDP](https://hdr.undp.org/data-center/documentation-and-downloads))
+-   `mys_r`: Mean years of schooling, female:male ratio (from [UNDP](https://hdr.undp.org/data-center/documentation-and-downloads))
+-   `lfpr_r`: Labor force participation rates (%), female:male ratio (from [UNDP](https://hdr.undp.org/data-center/documentation-and-downloads))
+
+### 1.2 Sample splitting
+
+In machine learning, sample splitting is a key step to ensure that models generalize well to unseen data. The simplest sample splitting is a test-train split:
+
+-   The training set is used to fit the model
+
+-   The testing set evaluates how well the model performs on unseen data
+
+This helps prevent overfitting, where a model performs well on training data but poorly on new data.
+
+To split the sample, we can use the `initial_split()` function from the `rsample` package. The `rsample` package is part of the `tidymodels` framework.
+
+This function will automatically randomly split the data into a training partition and a test partition according to the proportions we provide as an argument to the function.
+
+```{r}
+#set.seed(47)
+## split into two folds (partitions)
+national_split <- initial_split(national_masterfile, prop = .75)
+
+## split into a train-test sample 
+national_train <- training(national_split) 
+national_test <- testing(national_split)
+```
+
+### 1.3 Simple Ordinary Least Squares (OLS) Regression Model
+
+First, we'll try fitting an OLS regression model (linear regression). We use OLS in the national pipeline due to a small sample size. However, even if the sample size allows more complex modelling, OLS models are still a good starting place for the modeling process. They are easy to interpret and can also serve as a helpful benchmark to help you understand how much better more complex machine learning algorithms are doing than a simple model.
+
+```{r}
+# Fit models using some randomly picked features
+national_primary <- lm(internet_wom ~ fb_18_999_wom + hdi + gdi + gdp_pcap, data = national_train)
+
+## print out summary of linear model 
+summary(national_primary)
+
+# Predict on the test datasets
+predicted_internet_wom <- predict(national_primary, national_test)
+```
+
+### 1.4 Model Performance Evaluation
+
+Let's first visualize our errors in a calibration plot, which allows us to directly compare the predicted vs. actual values and analyze residuals.This helps us intuitively assess how well the model performs.
+
+```{r}
+## add predictions onto test (hold-out) data and limit prediction to (0, 1), since the penetration rate cannot be smaller than 0 or greater than 1
+predicted_internet_wom <- pmin(pmax(predicted_internet_wom, 0), 1)
+
+national_test_predict <- national_test %>% 
+  mutate(predicted_internet_wom = predicted_internet_wom)
+
+national_test_predict %>% 
+  ggplot(aes(x = predicted_internet_wom, y = internet_wom)) +
+  geom_point() + 
+  theme_cowplot() + 
+  ylim(0, 1) +
+  xlim(0, 1) +
+  geom_abline(color = "red", linetype = "dashed") 
+```
+
+If our predictions were perfect, they would lie along the red dashed line at 45 degrees. Here, we see some degrees of deviations away from this line, but the prediction still looks good.
+
+To more formally assess the performance of our model, we'll calculate the three error metrics: Mean Absolute Error, Root Mean Squared Error, and R-squared. We'll introduce them below and then write functions to calculate these error metrics.
+
+#### 1.4.1 Mean Absolute Error (MAE)
+
+MAE measures the average absolute differences between actual and predicted values:
+
+$$
+\text{MAE} = \frac{1}{n} \sum_{i=1}^{n} |y_i - \hat{y}_i|
+$$
+
+It provides an intuitive measure of the magnitude of error, treating all deviations equally.
+
+#### 1.4.2 Root Mean Squared Error (RMSE)
+
+RMSE squares the errors before averaging, making it more sensitive to large deviations. It then takes the square root of the mean squared errors to bring the error units back to the original scale of the dependent variable, making it easier to interpret compared to Mean Squared Error (MSE):
+
+$$
+\text{RMSE} = \sqrt{\frac{1}{n} \sum_{i=1}^{n} (y_i - \hat{y}_i)^2}
+$$
+
+This metric is widely used and penalizes large errors more than smaller ones.
+
+#### 1.4.3 R-squared ($R^2$)
+
+$R^2$ quantifies how well the model explains variance in the dependent variable:
+
+$$
+R^2 = 1 - \frac{\sum_{i=1}^{n} (y_i - \hat{y}_i)^2}{\sum_{i=1}^{n} (y_i - \bar{y})^2}
+$$
+
+where $\bar{y}$ is the mean of the observed values. Higher values indicate a better fit, with $R^2 = 1$ representing a perfect model and $R^2 = 0$ representing a model doing no better than predicting mean of outcome variable.
+
+#### 1.4.4 Calculate model performance metrics
+
+```{r}
+# Function to compute Mean Absolute Error (MAE)
+mae <- function(actual, predicted) {
+  mean(abs(actual - predicted))
+}
+
+# Function to compute Root Mean Squared Error (MSE)
+rmse <- function(actual, predicted) {
+  sqrt(mean((actual - predicted)^2))
+}
+
+# Function to compute R-squared (R²)
+r_squared <- function(actual, predicted) {
+  ss_total <- sum((actual - mean(actual))^2)
+  ss_residual <- sum((actual - predicted)^2)
+  1 - (ss_residual / ss_total)
+}
+```
+
+Let's use the functions we just created to calculate model performance metrics for our linear model:
+
+```{r}
+## Calculate mae, mse, and r_squared 
+national_test_predict %>% 
+  summarize(rmse = rmse(internet_wom, predicted_internet_wom),
+            mae = mae(internet_wom, predicted_internet_wom),
+            r_squared = r_squared(internet_wom, predicted_internet_wom))
+```
+
+The model is doing moderately well — the $R^2$ value tells us that 76% of the variance is explained by the model. On average, our model predictions for female internet penetration rate deviate from the actual observed values for 0.13.
+
+### 1.5 Cross-validation
+
+In traditional train-test splitting, a common limitation is that not all data points are used for both training and testing — this can lead to less efficient/reliable model evaluations. Cross-validation addresses this by ensuring that each observation is used in both training and validation phases, providing a more comprehensive assessment of the model's performance.
+
+The most common method is k-fold cross-validation, where the data is split into k parts (folds). The model is trained on k-1 folds and tested on the remaining fold. This process repeats k times, with each fold used for testing once. The results are averaged to the overall performance metric.
+
+That's what we'll do here. To perform the cross-validation, we'll use the `tidymodel` [package](https://www.tidymodels.org/). This is a well-maintained modern framework in R for streamlining machine learning workflows. First, we'll use the `vfold_cv` function to randomly split our dataset into 10 separate folds. For k-fold cross-validation, 10 is a fairly standard choice for the number of folds—but there may be settings where want to use a different number of folds.
+
+We'll use our full dataset (we are using cross-validation instead of doing a test/train split).
+
+```{r}
+set.seed(47)
+## create folds 
+folds_10folds <- vfold_cv(national_masterfile, v = 10)
+folds_10folds
+```
+
+In `tidymodels`, we use a **workflow** to organize the different components of our modeling process—such as the model definition and the formula that specifies the outcome and predictors. After we've defined our model, we can pass the specification to the key function we want to use for cross-validation, which is `fit_resamples()`. The function will fit the model to multiple subsets of the data and assesses its performance on corresponding test sets.
+
+We'll also have the function automatically calculate the three model performance metrics we're interested in. We will need to manually specify the error metrics in the `fit_resamples()` function from the `yardstick` package. We'll use mean absolute error (MAE), root mean squared error (RMSE), and $R^2$.
+
+```{r}
+##Set up ols model specification
+ols_spec <- linear_reg() %>%
+  set_engine("lm") %>%
+  set_mode("regression")
+
+ols_res_10fold <- fit_resamples(
+  ols_spec,
+  internet_wom ~ fb_18_999_wom + hdi + gdi + gdp_pcap,
+  resamples = folds_10folds,
+  metrics = metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)
+)
+```
+
+To access the error metric that were calculated by the `fit_resamples()` function, we can use the `collect_metrics()` function.
+
+```{r}
+## get error metrics  
+error_metrics_10fold_national <- collect_metrics(ols_res_10fold)
+
+## print out error metrics 
+error_metrics_10fold_national %>% 
+  mutate(cv_method = "10-fold")
+```
+
+Here, we're interested in the mean of the performance error metrics across the 10 different folds. Our model appears to be performing well. It explains 72% of the variation in female internet adoption.
+
+### 1.6 Model Comparison: Online, Offline and Combined
+
+We categorize our predicting models into three types based on the features they use. Online models include only Facebook features, while offline models use only background socioeconomic indicators. Combined models include both types of features. To compare the performance of these models, we’ll once again use cross-validation along with performance metrics that we defined above.
+
+```{r}
+##Online model, including all fb features. We continue to use the specification for OLS model defined above.
+ols_res_10fold_online <- fit_resamples(
+  ols_spec,
+  internet_wom ~ fb_18_999_wom + fb_18_999_wom + fb_18_999_r,
+  resamples = folds_10folds,
+  metrics = metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)
+)
+
+error_metrics_10fold_national_online <- collect_metrics(ols_res_10fold_online) %>%
+  mutate(model_type = "online")
+
+##Offline model, including only a set of background features
+ols_res_10fold_offline <- fit_resamples(
+  ols_spec,
+  internet_wom ~ hdi + gdi + gdp_pcap + years_from_2015,
+  resamples = folds_10folds,
+  metrics = metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)
+) 
+
+error_metrics_10fold_national_offline <- collect_metrics(ols_res_10fold_offline) %>%
+  mutate(model_type = "offline")
+
+##Combined model, using combined feature sets
+ols_res_10fold_combined <- fit_resamples(
+  ols_spec,
+  internet_wom ~ fb_18_999_wom + fb_18_999_wom + fb_18_999_r + hdi + gdi + gdp_pcap + years_from_2015,
+  resamples = folds_10folds,
+  metrics = metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)
+) %>%
+  mutate(model_type = "combined")
+
+error_metrics_10fold_national_combined <- collect_metrics(ols_res_10fold_combined) %>%
+  mutate(model_type = "combined")
+
+
+##Combining error metrics together
+national_model_comparison <- bind_rows(error_metrics_10fold_national_online, error_metrics_10fold_national_offline, error_metrics_10fold_national_combined)
+```
+
+Visualize our results using bar charts
+
+```{r}
+ggplot(national_model_comparison, aes(x = model_type, y = mean, fill = model_type)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = round(mean, 3)), 
+            vjust = 1, size = 3.5) + 
+  facet_wrap(~ .metric, scales = "free_y", ncol = 2) +
+  labs(x = NULL, y = NULL) +
+  theme_cowplot() +
+  theme(legend.position = "none")
+```
+
+The 10-fold cross-validation results across all performance metrics consistently indicate that the combined model outperforms both the online and offline models. From a theoretical perspective, this is expected: combining online and offline features should yield more precise estimates of the digital gender gap. While online indicators such as Facebook penetration can serve as useful proxies, they are susceptible to **behavioral drift**—that is, changes in platform usage patterns across countries and over time. For example, in countries with mature internet markets, younger female users may prefer Instagram over Facebook. In contrast, in countries with emerging digital infrastructure, Facebook may remain the dominant platform across age and gender groups. As a result, the same Facebook gender gap value (e.g., 0.85) may have very different implications in the UK versus Indonesia. We therefore include offline indicators to help contextualize and correct for these behavioral differences across different settings.
+
+### 1.7 Exercise 1:
+
+1.  Can we improve our model performance by adding more predictors into the model? Set up a new model on the basis of the combined model and compare their MAE, RMSE, and $R^2$. What would be the potential drawbacks of adding more features?
+2.  Try setting up a combined model to predict internet gender gap (`internet_ggi`). Compare its performance to the model predicting female internet adoption (`internet_wom`). Does the model perform better or worse when predicting the gender gap? What might explain the difference in model performance between these two outcomes?
+
+## 2. Predicting Subnational-level Female Internet Adoption Using Random Forest
+
+National-level nowcasts of the digital gender gap have provided valuable insights into global patterns of digital gender inequality. However, many countries exhibit significant internal geographic disparities, which can lead to substantial subnational variation in digital gender gaps. To capture these within-country differences, we calculated ground truth data at the GADM1 (first-level administrative) level from Demographic and Health Surveys (DHS) and trained machine learning models to predict digital gender gaps at the subnational scale. The subnational analysis yields a larger "sample size" (one country could split into 10 regions) that enables us to adopt more complex machine learning models. Here, we introduce predicting subnational digital gender gaps using Random Forest models.
+
+Let's first read in the data
+
+```{r}
+internet_subnational <- read_csv("subnational_masterfile.csv")
+```
+
+### 2.1 Feature Definitions
+
+Our subnational feature sets also consist of both online and offline fatures. Here's the descriptions of the features we have available in our dataset:
+
+-   `gid_1`: Subnational administrative unit identifier (from GADM, a global administrative boundaries database).
+-   `country`: Name of the country corresponding to the administrative unit.
+-   `perc_used_internet_past12months_wght_age_15_to_49_wom`: Percentage of women (ages 15–49) who used the internet in the past 12 months, weighted (from DHS)
+-   `perc_used_internet_past12months_wght_age_15_to_49_fm_ratio`: Female-to-male ratio of internet usage among individuals aged 15–49, weighted (from DHS)
+-   `hdi_national`: National-level composite measure of health, education, and standard of living (from [UNDP](https://hdr.undp.org/data-center/documentation-and-downloads))
+-   `gdi_national`: National-level Gender Development Index (GDI), measuring disparities on the HDI by gender (from [UNDP](https://hdr.undp.org/data-center/documentation-and-downloads))
+-   `subnational_gdi`: Subnational-level Gender Development Index (from [Global Development Lab](https://globaldatalab.org/shdi/))
+-   `subnational_hdi_females`: Subnational composite measure of health, education, and standard of living for women (from [Global Development Lab](https://globaldatalab.org/shdi/))
+-   `subnational_hdi_males`: Subnational composite measure of health, education, and standard of living for men (from [Global Development Lab](https://globaldatalab.org/shdi/))
+-   `nl_mean_zscore`: Z-score of nighttime lights intensity, often used as a proxy for economic activity (from [NASA VIIRS](https://www.earthdata.nasa.gov/data/instruments/viirs))
+-   `pop_density_zscore`: Z-score of population density, normalizing population per unit area (from [WorldPop](https://hub.worldpop.org/) team)
+-   `fb_pntr_18p_female`: Facebook penetration rate among women aged 18+ (percentage of women on Facebook in the last month relative to population) (from FB marketing API)
+-   `fb_pntr_18p_male`: Facebook penetration rate among men aged 18+ (percentage of women on Facebook in the last month relative to population) (from FB marketing API)
+
+### 2.2 Fitting Random Forest Models
+
+Random forest is an ensemble learning method that improves prediction accuracy by combining multiple decision trees. At a high level, random forest works by:
+
+1.  Creating multiple decision trees using different random subsets of the training data
+2.  Averaging predictions across trees (for regression) to make a final prediction
+3.  Reducing overfitting by ensuring that individual trees don’t rely too heavily on any single feature or pattern in the data
+
+Random Forest is particularly useful for handling nonlinear relationships (like ours), high-dimensional datasets (with many features), and noisy data. We use this model as a demonstration because it is popular, easy to learn, and performs well without extensive hyperparameter tuning.
+
+To fit the model, we still use the `tidymodel` [package](https://www.tidymodels.org/). We'll first need to define the random forest model we want to fit. We'll start by specifying the *hyperparameters* for our random forest model. Hyperparameters are configurable settings that control a model's learning process; they have to be specified in advance and not learned from the data. Here's the hyperparameters we'll use:
+
+-   `mtry = 3`: Three predictors are considered for each decision tree.
+-   `trees = 500`: The model builds 500 decision trees for better averaging.
+-   `min_n = 5`: Each terminal node must have at least 5 observations.
+
+We'll set the engine to `Ranger`, which is a fast implementation of random forest. We'll also need to specify that this is a regression problem (predicting a continuous outcome) and not a classification problem (predicting a categorical or binary outcome).
+
+```{r}
+# Define a random forest model specification
+rf_spec <- rand_forest(mtry = 3, trees = 500, min_n = 5) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+```
+
+We'll split our data into a test and a training partition, just like we did in section 1.
+
+```{r}
+set.seed(47)
+## sgenerate train and test folds (partitions)
+internet_subnational_split <- initial_split(internet_subnational, prop = .75)
+
+## split into a train-test sample 
+internet_subnational_train <- training(internet_subnational_split) 
+internet_subnational_test <- testing(internet_subnational_split)
+```
+
+For the baseline model, we'll start with just three features:
+
+1.  Night lights data (`nl_mean_zscore`) – a proxy for economic activity and development
+2.  Facebook penetration among women (`fb_pntr_18p_female`) – an indicator of digital access
+3.  Subnational Human Development Index for females (`subnational_hdi_females`) – subnational composite measure of health, education, and standard of living for women
+
+```{r}
+# Train the Random Forest model on three features 
+rf_fit_internet <- rf_spec %>%
+  fit(perc_used_internet_past12months_wght_age_15_to_49_wom ~ fb_pntr_18p_female + subnational_hdi_females + nl_mean_zscore,
+      data = internet_subnational_train)
+```
+
+Just to help build intuition, let's check our model performance metrics on the ***training*** data.
+
+```{r}
+set.seed(47)
+## make predictions and add predictions onto training dataset
+test_w_rf_predictions <- predict(rf_fit_internet, new_data = internet_subnational_train) %>% 
+    bind_cols(internet_subnational_train)  # Add actual values for comparison
+
+## calculate model performance metrics 
+model_performance_metrics_training <- test_w_rf_predictions %>% 
+  summarize(mae = mae(.pred, perc_used_internet_past12months_wght_age_15_to_49_wom),
+            rmse = rmse(.pred, perc_used_internet_past12months_wght_age_15_to_49_wom),
+            r_squared = r_squared(.pred, perc_used_internet_past12months_wght_age_15_to_49_wom))
+
+## print model 
+model_performance_metrics_training
+```
+
+In machine learning analysis, assessing model performance on the data we trained is highly misleading since these complex models usually perform extremely good on training set, but it's probably because they just memorize patterns in the training data (overfitting).
+
+Let's check how things look when we assess model performance in the test data:
+
+```{r}
+set.seed(47)
+## make predictions and then 
+test_w_rf_predictions_test <- predict(rf_fit_internet, new_data = internet_subnational_test) %>% 
+    bind_cols(internet_subnational_test)  # Add actual values for comparison
+
+## calculate model performance metrics 
+model_performance_metrics_test <- test_w_rf_predictions_test %>% 
+  summarize(mae = mae(.pred, perc_used_internet_past12months_wght_age_15_to_49_wom),
+            rmse = rmse(.pred, perc_used_internet_past12months_wght_age_15_to_49_wom), 
+            r_squared = r_squared(.pred, perc_used_internet_past12months_wght_age_15_to_49_wom))
+
+model_performance_metrics_test
+```
+
+Let's visualize the difference in model performance metrics.
+
+```{r}
+model_performance_combined <- model_performance_metrics_training %>%
+    mutate(set = "training") %>%
+    bind_rows(model_performance_metrics_test %>% mutate(set = "test")) %>%
+    pivot_longer(cols = -set, names_to = "metric", values_to = "value")
+
+model_performance_combined %>% 
+  ggplot(aes(x = set, y = value, fill = set)) + 
+  geom_col() + 
+  facet_wrap(~metric, scales = "free") + 
+  theme_cowplot() + 
+  theme(legend.position = "bottom")
+```
+
+### 2.3 10-fold Cross-validation
+
+As we have discussed in section 1, cross-validation is preferred than the traditional train-test splitting. Following the same procedure, we first conduct a 10-fold CV.
+
+```{r}
+set.seed(47)
+## create folds 
+folds_10folds <- vfold_cv(internet_subnational, v = 10)
+folds_10folds
+```
+
+Like in the other examples, we need to define our random forest model before fitting.
+
+```{r}
+set.seed(47)
+# Define a random forest model specification (same as above)
+rf_spec <- rand_forest(mtry = 3, trees = 500, min_n = 5) %>%
+  set_engine("ranger") %>%
+  set_mode("regression")
+
+
+## Define a fitting specification 
+rf_res_10fold <- fit_resamples(
+  rf_spec,
+  perc_used_internet_past12months_wght_age_15_to_49_wom ~ fb_pntr_18p_female + subnational_hdi_females + nl_mean_zscore,
+  resamples = folds_10folds,
+  metrics = metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)
+)
+
+## get error metrics  
+error_metrics_10fold <- collect_metrics(rf_res_10fold)
+
+## print out error metrics 
+error_metrics_10fold %>% 
+  mutate(cv_method = "10-fold")
+```
+
+Our model appears to be performing well, explaining 66% of the variation in internet adoption using only three features.
+
+### 2.4 Leave-one-country-out Cross-validation
+
+Nevertheless, we want to know how well our model would perform in countries we had no training data at all (e.g., not one of the 34 countries in our dataset). This time we would employ leave-one-country-out cross-validation rather than the standard 10-fold cross-validation. In this approach, we iteratively exclude all subnational units from one country, train the model on subnational units from the remaining countries, and then assess its performance on the excluded country's subnational units. This method evaluates the model's ability to generalize to unseen countries (assuming they are similar to the countries we have in our dataset).
+
+Here, we'll split into folds based on country (rather than random). Calculate MAE, RMSE, and $R^2$.
+
+```{r}
+set.seed(47)
+## make new folds 
+folds_loco <- group_vfold_cv(internet_subnational, group = country)
+folds_loco
+
+rf_res_loco <- fit_resamples(
+  rf_spec,
+  perc_used_internet_past12months_wght_age_15_to_49_wom ~ fb_pntr_18p_female + subnational_hdi_females + nl_mean_zscore,
+  resamples = folds_loco,
+  metrics = metric_set(yardstick::rmse, yardstick::mae, yardstick::rsq)
+)
+
+error_metrics_loco <- collect_metrics(rf_res_loco) %>%
+  mutate(cv_method = "loco")
+
+error_metrics_loco
+```
+
+We find that model performance is consistently worse when using leave-one-country-out cross-validation (LOCO-CV) compared to standard 10-fold cross-validation. This is expected because LOCO-CV is a stricter and more realistic test of generalizability. In 10-fold CV, the model is trained and tested on subnational units from a shared pool, meaning each test fold likely contains units from countries that also appear in the training folds. In contrast, LOCO-CV forces the model to predict outcomes for entire countries it has never seen before. This setup simulates a real-world scenario where we apply the model to a country with no ground truth data available. If the relationship between predictors and outcomes varies across countries — due to cultural, economic, or infrastructural differences — the model may not generalize well.
+
+We can also create calibration plots with our observed and predicted values for both 10-fold cross-validation and leave-one-country-out cross-validation predictions. To get predictions from CV, we use `control = control_resamples(save_pred = TRUE)` to tell tidymodel to save the predictions made during each fold of cross-validation. After fitting the model, we use `collect_predictions` function to collect predicted values.
+
+```{r}
+set.seed(47)
+##We define the entire workflow first and we don't have to repeat the feature sets in the fitting process again.
+rf_wf <- workflow() %>%
+  add_model(rf_spec) %>%
+  add_formula(perc_used_internet_past12months_wght_age_15_to_49_wom ~ fb_pntr_18p_female + subnational_hdi_females + nl_mean_zscore)
+
+cv_10folds_results <- rf_wf %>%
+  fit_resamples(
+    resamples = folds_10folds,
+    control = control_resamples(save_pred = TRUE)
+  )
+
+predictions_10folds <- collect_predictions(cv_10folds_results)
+
+predictions_10folds %>%
+  ggplot(aes(x = perc_used_internet_past12months_wght_age_15_to_49_wom, y = .pred)) +
+  geom_point() + 
+  theme_cowplot() + 
+  geom_abline(color = "red", linetype = "dashed")
+```
+
+```{r}
+set.seed(47)
+##LOCO-CV
+cv_loco_results <- rf_wf %>%
+  fit_resamples(
+    resamples = folds_loco,
+    control = control_resamples(save_pred = TRUE)
+  )
+
+predictions_loco <- collect_predictions(cv_loco_results)
+
+predictions_loco %>%
+  ggplot(aes(x = perc_used_internet_past12months_wght_age_15_to_49_wom, y = .pred)) +
+  geom_point() + 
+  theme_cowplot() + 
+  geom_abline(color = "red", linetype = "dashed")
+```
+
+Similar to leave-one-country-out cross-validation (LOCO-CV), we also implement leave-one-year-out cross-validation (LOYO-CV). In this setup, the model is trained on data from all years except one, and then tested on the held-out year. This process is repeated for each year in the dataset. This helps us to evaluate the model’s ability to generalize across time.
+
+### 2.5 Exercise 2
+
+1.  Construct online, offline and combined predicting models for female internet adoption using random forest models. Use LOCO-CV method to evaluate model performance. Does the result align with your expectations?
+2.  Using your best-performing models, try adjusting the hyperparameters and evaluate the results using LOCO-CV. Compare the change in model performance due to hyperparameter tuning with the change in performance across different feature sets (e.g., online, offline, combined). Which factor has a greater impact on model performance?
+
+### Bonus: Superlearner
+
+While we use random forest to generate subnational nowcasts in the DGG project, it is not the only algorithm we rely on. Instead, we use an ensemble Superlearner—also known as weighted ensembling or stacking—which combines predictions from multiple machine learning algorithms into a single, optimized model. The motivation behind ensemble Superlearning is that a well-calibrated weighted combination of diverse algorithms can often outperform any single model. By leveraging the strengths of different methods and smoothing out their individual weaknesses, the Superlearner helps reduce the risk of overfitting and improves generalizability. To construct the ensemble, the algorithm uses a cross-validation procedure to determine the optimal weights for each learner—selecting the combination that delivers the best out-of-sample performance. In our implementation, the Superlearner draws from a diverse library of widely-used machine learning models, including Random Forest, Generalized Linear Models (GLM), Gradient Boosting Machines (GBM), Lasso Regression, Elastic Net Regression, Polynomial Splines Regression, Ridge Regression, and Extreme Gradient Boosting (XGBoost).
+
+If you're interested in replicating this approach or exploring the full pipeline, feel free to visit our [GitHub repository](https://github.com/OxfordDemSci/dgg_subnational).
